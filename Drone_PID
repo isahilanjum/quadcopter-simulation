@@ -1,0 +1,263 @@
+import numpy as np
+import math
+import matplotlib.pyplot as plt
+from scipy.integrate import odeint
+
+
+
+# Define system parameters
+M = 0.65  # mass of quadcopter (kg)
+m_l = 0.3  # mass of payload (kg)
+L = 1.0  # length of the rope (m)
+g = 9.81  # gravitational acceleration (m/s²)
+Ixx = 7.5e-3  # moment of inertia about x-axis (kg·m²)
+Iyy = 7.5e-3  # moment of inertia about x-axis (kg·m²)
+Izz = 7.5e-3  # moment of inertia about x-axis (kg·m²)
+
+
+def cos(angle):
+    return np.cos(angle)
+
+def sin(angle):
+    return np.sin(angle);
+
+
+# Refined Position Control Gains
+Kp_x, Kd_x, Ki_x = 1.5, 0.8, 0.1
+Kp_y, Kd_y, Ki_y = 1.5, 0.8, 0.1
+Kp_z, Kd_z, Ki_z = 3.0, 1.2, 0.2
+
+# Refined Orientation Control Gains
+Kp_phi, Kd_phi, Ki_phi = 1.2, 0.6, 0.05
+Kp_theta, Kd_theta, Ki_theta = 1.2, 0.6, 0.05
+Kp_psi, Kd_psi, Ki_psi = 0.8, 0.5, 0.05
+
+
+
+
+# Define the dynamics function
+def quadcopter_dynamics_3d(state, t):
+    # Unpack state variables
+    (x, y, z, phi, theta, psi,alpha, beta, dx, dy, dz, phidot, thetadot, psidot, alphadot, betadot,
+     integral_x, integral_y, integral_z,integral_phi,integral_theta,integral_psi) = state
+
+    # Desired setpoints
+    x_desired, y_desired, z_desired = 0.0, 90.0 , 60.0
+
+    # Position PI controller
+    error_x = x_desired - x
+    error_y = y_desired - y
+    error_z = z_desired - z
+
+    integral_x += error_x
+    integral_y += error_y
+    integral_z += error_z
+
+    f_x = Kp_x * error_x + Kd_x * (-dx) + Ki_x * integral_x
+    f_y = Kp_y * error_y + Kd_y * (-dy) + Ki_y * integral_y
+    f_z = Kp_z * error_z + Kd_z * (-dz) + Ki_z * integral_z + (M + m_l) * g
+    T = (M + m_l) * math.sqrt(f_x ** 2 + f_y ** 2 + f_z ** 2)
+    # Orientation control errors
+    phi_desired = math.asin(max(-1.0, min(1.0, f_x / T)))  # Clamping to [-1, 1]
+    theta_desired = math.atan2(f_x, f_z)  # atan2 handles zero and signs appropriately
+    psi_desired = 0  # Assuming desired yaw is zero
+    #phi_desired = math.atan2(f_z, f_y)
+    #theta_desired = math.asin(max(-1.0, min(1.0, f_x /math.sqrt(f_z**2 + f_x**2))))
+    #psi_desired = math.acos(max(-1.0, min(1.0, f_y / T)))
+    error_phi = phi_desired - phi
+    error_theta = theta_desired - theta
+    error_psi = psi_desired - psi
+
+    integral_phi += error_phi
+    integral_theta += error_theta
+    integral_psi += error_psi
+
+    # Orientation PD controller
+    # PID for orientation control
+    tau_phi = (Kp_phi * error_phi +
+               Kd_phi * (-phidot) +
+               Ki_phi * integral_phi)  # Full PID for roll
+
+    tau_theta = (Kp_theta * error_theta +
+                 Kd_theta * (-thetadot) +
+                 Ki_theta * integral_theta)  # Full PID for pitch
+
+    tau_psi = (Kp_psi * error_psi +
+               Kd_psi * (-psidot) +
+               Ki_psi * integral_psi)  # Full PID for yaw
+
+    A = np.zeros((8, 8))
+    B = np.zeros((8, 1))
+
+    A[0, 0] = 1.0 * M + 1.0 * m_l
+    A[0, 1] = 0
+    A[0, 2] = 0
+    A[0, 3] = 0
+    A[0, 4] = 0
+    A[0, 5] = 0
+    A[0, 6] = 1.0 * L * m_l * cos(alpha) * cos(beta)
+    A[0, 7] = -1.0 * L * m_l * sin(alpha) * sin(beta)
+    A[1, 0] = 0
+    A[1, 1] = 1.0 * M + 1.0 * m_l
+    A[1, 2] = 0
+    A[1, 3] = 0
+    A[1, 4] = 0
+    A[1, 5] = 0
+    A[1, 6] = 0
+    A[1, 7] = -1.0 * L * m_l * cos(beta)
+    A[2, 0] = 0
+    A[2, 1] = 0
+    A[2, 2] = 1.0 * M + 1.0 * m_l
+    A[2, 3] = 0
+    A[2, 4] = 0
+    A[2, 5] = 0
+    A[2, 6] = -1.0 * L * m_l * sin(alpha) * cos(beta)
+    A[2, 7] = -1.0 * L * m_l * sin(beta) * cos(alpha)
+    A[3, 0] = 0
+    A[3, 1] = 0
+    A[3, 2] = 0
+    A[3, 3] = 1.0 * Ixx
+    A[3, 4] = 0
+    A[3, 5] = -1.0 * Ixx * sin(theta)
+    A[3, 6] = 0
+    A[3, 7] = 0
+    A[4, 0] = 0
+    A[4, 1] = 0
+    A[4, 2] = 0
+    A[4, 3] = 0
+    A[4, 4] = 1.0 * Iyy * cos(phi) ** 2 + 1.0 * Izz * sin(phi) ** 2
+    A[4, 5] = 0.25 * (Iyy - Izz) * (sin(2 * phi - theta) + sin(2 * phi + theta))
+    A[4, 6] = 0
+    A[4, 7] = 0
+    A[5, 0] = 0
+    A[5, 1] = 0
+    A[5, 2] = 0
+    A[5, 3] = -1.0 * Ixx * sin(theta)
+    A[5, 4] = 0.25 * (Iyy - Izz) * (sin(2 * phi - theta) + sin(2 * phi + theta))
+    A[5, 5] = 1.0 * Ixx * sin(theta) ** 2 + 1.0 * Iyy * sin(phi) ** 2 * cos(theta) ** 2 + 1.0 * Izz * cos(
+        phi) ** 2 * cos(theta) ** 2
+    A[5, 6] = 0
+    A[5, 7] = 0
+    A[6, 0] = 1.0 * L * m_l * cos(alpha) * cos(beta)
+    A[6, 1] = 0
+    A[6, 2] = -1.0 * L * m_l * sin(alpha) * cos(beta)
+    A[6, 3] = 0
+    A[6, 4] = 0
+    A[6, 5] = 0
+    A[6, 6] = 1.0 * L ** 2 * m_l * cos(beta) ** 2
+    A[6, 7] = 0
+    A[7, 0] = -1.0 * L * m_l * sin(alpha) * sin(beta)
+    A[7, 1] = -1.0 * L * m_l * cos(beta)
+    A[7, 2] = -1.0 * L * m_l * sin(beta) * cos(alpha)
+    A[7, 3] = 0
+    A[7, 4] = 0
+    A[7, 5] = 0
+    A[7, 6] = 0
+    A[7, 7] = 1.0 * L ** 2 * m_l
+    B[0] = 1.0 * L * alphadot ** 2 * m_l * sin(alpha) * cos(beta) + 2.0 * L * alphadot * betadot * m_l * sin(
+        beta) * cos(alpha) + 1.0 * L * betadot ** 2 * m_l * sin(alpha) * cos(beta) + 1.0 * f_x
+    B[1] = -1.0 * L * betadot ** 2 * m_l * sin(beta) + f_y
+    B[2] = 1.0 * L * alphadot ** 2 * m_l * cos(alpha) * cos(beta) - 2.0 * L * alphadot * betadot * m_l * sin(
+        alpha) * sin(beta) + 1.0 * L * betadot ** 2 * m_l * cos(alpha) * cos(
+        beta) + 1.0 * M * g + 1.0 * f_z + 1.0 * g * m_l
+    B[3] = 1.0 * Ixx * psidot * thetadot * cos(theta) + 1.0 * Iyy * (
+                psidot * sin(phi) * cos(theta) + thetadot * cos(phi)) * (
+                       psidot * cos(phi) * cos(theta) - thetadot * sin(phi)) - 1.0 * Izz * (
+                       psidot * sin(phi) * cos(theta) + thetadot * cos(phi)) * (
+                       psidot * cos(phi) * cos(theta) - thetadot * sin(phi)) + tau_phi
+    B[4] = -1.0 * Ixx * phidot * psidot * cos(theta) + 0.5 * Ixx * psidot ** 2 * sin(
+        2 * theta) - 0.5 * Iyy * phidot * psidot * cos(2 * phi - theta) - 0.5 * Iyy * phidot * psidot * cos(
+        2 * phi + theta) + 1.0 * Iyy * phidot * thetadot * sin(2 * phi) - 0.25 * Iyy * psidot ** 2 * sin(
+        2 * theta) - 0.125 * Iyy * psidot ** 2 * sin(2 * phi - 2 * theta) + 0.125 * Iyy * psidot ** 2 * sin(
+        2 * phi + 2 * theta) + 0.5 * Izz * phidot * psidot * cos(2 * phi - theta) + 0.5 * Izz * phidot * psidot * cos(
+        2 * phi + theta) - 1.0 * Izz * phidot * thetadot * sin(2 * phi) - 0.25 * Izz * psidot ** 2 * sin(
+        2 * theta) + 0.125 * Izz * psidot ** 2 * sin(2 * phi - 2 * theta) - 0.125 * Izz * psidot ** 2 * sin(
+        2 * phi + 2 * theta) + 1.0 * tau_theta
+    B[5] = -0.5 * phidot * (
+                Iyy * psidot * sin(2 * phi - theta) + Iyy * psidot * sin(2 * phi + theta) + 2 * Iyy * thetadot * cos(
+            2 * phi) - Izz * psidot * sin(2 * phi - theta) - Izz * psidot * sin(
+            2 * phi + theta) - 2 * Izz * thetadot * cos(2 * phi)) * cos(theta) + tau_psi + 0.25 * thetadot * (
+                       4 * Ixx * phidot * cos(theta) - 4 * Ixx * psidot * sin(2 * theta) + 2 * Iyy * psidot * sin(
+                   2 * theta) + Iyy * psidot * sin(2 * phi - 2 * theta) - Iyy * psidot * sin(
+                   2 * phi + 2 * theta) + Iyy * thetadot * cos(2 * phi - theta) - Iyy * thetadot * cos(
+                   2 * phi + theta) + 2 * Izz * psidot * sin(2 * theta) - Izz * psidot * sin(
+                   2 * phi - 2 * theta) + Izz * psidot * sin(2 * phi + 2 * theta) - Izz * thetadot * cos(
+                   2 * phi - theta) + Izz * thetadot * cos(2 * phi + theta))
+    B[6] = L * m_l * (2.0 * L * alphadot * betadot * sin(beta) - 1.0 * g * sin(alpha)) * cos(beta)
+    B[7] = -1.0 * L * m_l * (L * alphadot ** 2 * cos(beta) + g * cos(alpha)) * sin(beta)
+
+    invA = np.linalg.inv(A)
+    Xddot = invA.dot(B)
+    i = 0;
+    ddx = Xddot[i, 0];
+    i += 1
+    ddy = Xddot[i, 0];
+    i += 1
+    ddz = Xddot[i, 0];
+    i += 1
+    phiddot = Xddot[i, 0];
+    i += 1
+    thetaddot = Xddot[i, 0];
+    i += 1
+    psiddot = Xddot[i, 0];
+    i += 1
+    alphaddot = Xddot[i, 0];
+    i += 1
+    betaddot = Xddot[i, 0];
+    i += 1
+    # Return derivatives
+    return [dx, dy, dz, phidot, thetadot, psidot, alphadot, betadot,
+            ddx, ddy, ddz, phiddot, thetaddot, psiddot, alphaddot, betaddot,
+            error_x, error_y, error_z,error_phi,error_theta,error_psi]
+
+
+x0 = 0; y0 = 0; z0 = 0;
+dx0 = 0; dy0 = 0; dz0 = 0;
+phi0 = 0.0; theta0 = 0; psi0 = 0; alpha0 = 0; beta0 = 0;
+phidot0 = 0; thetadot0 = 0; psidot0 = 0; alphadot0 = 0; betadot0 = 0;
+
+t = np.linspace(0, 80, 1000)
+X0 = np.array([x0, y0, z0, phi0, theta0, psi0,alpha0,beta0 ,dx0, dy0, dz0, phidot0, thetadot0, psidot0, alphadot0 ,betadot0,0,0,0,0,0,0])
+
+# Simulate the system
+state_trajectory = odeint(quadcopter_dynamics_3d, X0, t)
+
+# Extended Plot for Quadcopter Dynamics
+fig, axs = plt.subplots(3, 1, figsize=(12, 12))
+
+# Position Plot
+axs[0].plot(t, state_trajectory[:, 0], label="x (m)", color="blue")
+axs[0].plot(t, state_trajectory[:, 1], label="y (m)", color="green")
+axs[0].plot(t, state_trajectory[:, 2], label="z (m)", color="red")
+#axs[0].axhline(x_desired, linestyle='--', color="blue", alpha=0.7, label="x desired")
+#axs[0].axhline(y_desired, linestyle='--', color="green", alpha=0.7, label="y desired")
+#axs[0].axhline(z_desired, linestyle='--', color="red", alpha=0.7, label="z desired")
+axs[0].set_title("Quadcopter Position")
+axs[0].set_ylabel("Position (m)")
+axs[0].legend()
+axs[0].grid()
+
+# Orientation Plot
+axs[1].plot(t, state_trajectory[:, 3], label="phi (roll)", color="cyan")
+axs[1].plot(t, state_trajectory[:, 4], label="theta (pitch)", color="magenta")
+axs[1].plot(t, state_trajectory[:, 5], label="psi (yaw)", color="brown")
+#axs[1].axhline(phi_desired, linestyle='--', color="cyan", alpha=0.7, label="phi desired")
+#axs[1].axhline(theta_desired, linestyle='--', color="magenta", alpha=0.7, label="theta desired")
+#axs[1].axhline(psi_desired, linestyle='--', color="brown", alpha=0.7, label="psi desired")
+axs[1].set_title("Quadcopter Orientation")
+axs[1].set_ylabel("Angle ")
+axs[1].legend()
+axs[1].grid()
+
+# Payload Angles Plot
+axs[2].plot(t, state_trajectory[:, 6], label="alpha (swing 1)", color="purple")
+axs[2].plot(t, state_trajectory[:, 7], label="beta (swing 2)", color="orange")
+axs[2].set_title("Payload Angles")
+axs[2].set_ylabel("Angle")
+axs[2].set_xlabel("Time (s)")
+axs[2].legend()
+axs[2].grid()
+
+# Adjust layout and display the plot
+plt.tight_layout()
+plt.show()
